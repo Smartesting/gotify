@@ -67,3 +67,34 @@ func (d *GormDatabase) UpdateClientTokensLastUsed(tokens []string, t *time.Time)
 func (d *GormDatabase) UpdateClientElevatedUntil(id uint, t *time.Time) error {
 	return d.DB.Model(&model.Client{}).Where("id = ?", id).Update("elevated_until", t).Error
 }
+
+// CleanupExpiredClients deletes clients whose inactivity exceeds their
+// expires_after_inactivity_seconds value. This is done in go code, because
+// adding seconds to a timestamp is different in the supported sql dialects.
+func (d *GormDatabase) CleanupExpiredClients(now time.Time) ([]*model.Client, error) {
+	var candidates []*model.Client
+	if err := d.DB.Where("expires_after_inactivity_seconds > 0").Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+	var expired []*model.Client
+	for _, c := range candidates {
+		expiresAt := c.GetExpiresAt()
+		if expiresAt == nil {
+			continue
+		}
+		if now.Sub(*expiresAt) >= 0 {
+			expired = append(expired, c)
+		}
+	}
+	if len(expired) == 0 {
+		return nil, nil
+	}
+	ids := make([]uint, len(expired))
+	for i, c := range expired {
+		ids[i] = c.ID
+	}
+	if err := d.DB.Where("id IN ?", ids).Delete(&model.Client{}).Error; err != nil {
+		return nil, err
+	}
+	return expired, nil
+}

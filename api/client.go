@@ -39,6 +39,11 @@ type ClientParams struct {
 	// required: true
 	// example: My Client
 	Name string `form:"name" query:"name" json:"name" binding:"required"`
+	// The number of seconds of inactivity after which the client is removed.
+	// 0 (or omitted) means the client never expires.
+	//
+	// example: 2592000
+	ExpiresAfterInactivitySeconds *uint `form:"expiresAfterInactivitySeconds" query:"expiresAfterInactivitySeconds" json:"expiresAfterInactivitySeconds"`
 }
 
 // UpdateClient updates a client by its id.
@@ -94,10 +99,14 @@ func (a *ClientAPI) UpdateClient(ctx *gin.Context) {
 			newValues := ClientParams{}
 			if err := ctx.Bind(&newValues); err == nil {
 				client.Name = newValues.Name
+				if newValues.ExpiresAfterInactivitySeconds != nil {
+					client.ExpiresAfterInactivitySeconds = *newValues.ExpiresAfterInactivitySeconds
+				}
 
 				if success := successOrAbort(ctx, 500, a.DB.UpdateClient(client)); !success {
 					return
 				}
+				client.PopulateExpiresAt()
 				ctx.JSON(200, client)
 			}
 		} else {
@@ -147,10 +156,14 @@ func (a *ClientAPI) CreateClient(ctx *gin.Context) {
 			Token:  auth.GenerateNotExistingToken(generateClientToken, a.clientExists),
 			UserID: auth.GetUserID(ctx),
 		}
+		if clientParams.ExpiresAfterInactivitySeconds != nil {
+			client.ExpiresAfterInactivitySeconds = *clientParams.ExpiresAfterInactivitySeconds
+		}
 
 		if success := successOrAbort(ctx, 500, a.DB.CreateClient(&client)); !success {
 			return
 		}
+		client.PopulateExpiresAt()
 		ctx.JSON(200, client)
 	}
 }
@@ -190,6 +203,7 @@ func (a *ClientAPI) GetClients(ctx *gin.Context) {
 		if client.ElevatedUntil != nil && !now.Before(*client.ElevatedUntil) {
 			client.ElevatedUntil = nil
 		}
+		client.PopulateExpiresAt()
 	}
 	ctx.JSON(200, clients)
 }
