@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# tester-env: Gotify lifecycle CLI for rl-env orchestration.
+#
+# Commands: deploy | reset | seed | status
+# Required: --run-id <id>
+# Optional: --port <port>
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE_NAME="tester-env-gotify"
+
+usage() {
+    echo "Usage: $0 {deploy|reset|seed|status} --run-id <id> [--port <port>]" >&2
+    exit 1
+}
+
+parse_args() {
+    RUN_ID=""
+    PORT=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --run-id) RUN_ID="$2"; shift 2 ;;
+            --port) PORT="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    if [[ -z "$RUN_ID" ]]; then
+        echo "ERROR: --run-id is required" >&2
+        exit 1
+    fi
+}
+
+container_name() { echo "${IMAGE_NAME}-${RUN_ID}"; }
+volume_name()   { echo "${IMAGE_NAME}-data-${RUN_ID}"; }
+image_tag()     { echo "${IMAGE_NAME}:${RUN_ID}"; }
+
+cmd_deploy() {
+    local cname vname itag port
+    cname=$(container_name)
+    vname=$(volume_name)
+    itag=$(image_tag)
+    port="${PORT:-80}"
+
+    echo "[deploy] Building Docker image ${itag} from ${SCRIPT_DIR}..."
+    docker build \
+        --build-arg GO_VERSION=1.26.0 \
+        --build-arg BUILD_JS=1 \
+        --build-arg "LD_FLAGS=-w -s -X main.Version=local -X main.BuildDate=$(date '+%F-%T') -X main.Commit=$(git -C "${SCRIPT_DIR}" rev-parse HEAD) -X main.Mode=prod" \
+        --build-arg DEBIAN=bookworm-slim \
+        -f "${SCRIPT_DIR}/docker/Dockerfile" \
+        -t "${itag}" \
+        "${SCRIPT_DIR}"
+
+    docker volume create "${vname}" 2>/dev/null || true
+
+    echo "[deploy] Starting container ${cname} on port ${port}..."
+    docker run -d \
+        --name "${cname}" \
+        -p "${port}:80" \
+        -e GOTIFY_DEFAULTUSER_PASS=admin \
+        -v "${vname}:/app/data" \
+        "${itag}"
+
+    echo "[deploy] Waiting for health check..."
+    for i in $(seq 1 45); do
+        if curl -sf "http://localhost:${port}/health" >/dev/null 2>&1; then
+            echo "[deploy] Gotify healthy at http://localhost:${port}"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "[deploy] ERROR: Gotify did not become healthy within 90s" >&2
+    return 1
+}
+
+cmd_reset() {
+    local cname vname itag
+    cname=$(container_name)
+    vname=$(volume_name)
+    itag=$(image_tag)
+
+    echo "[reset] Stopping container ${cname}..."
+    docker stop "${cname}" 2>/dev/null || true
+    echo "[reset] Removing container ${cname}..."
+    docker rm "${cname}" 2>/dev/null || true
+
+    if docker volume inspect "${vname}" >/dev/null 2>&1; then
+        echo "[reset] Cleaning volume ${vname}..."
+        docker run --rm -v "${vname}:/data" busybox sh -c "rm -rf /data/*" 2>/dev/null || true
+        echo "[reset] Removing volume ${vname}..."
+        docker volume rm "${vname}" 2>/dev/null || true
+    fi
+
+    echo "[reset] Removing image ${itag}..."
+    docker rmi "${itag}" 2>/dev/null || true
+}
+
+cmd_seed() {
+    echo "[seed] No seed profile recorded for gotify. Nothing to do."
+}
+
+cmd_status() {
+    local cname port
+    cname=$(container_name)
+    port="${PORT:-80}"
+
+    if docker ps --format '{{.Names}}' | grep -qx "${cname}"; then
+        echo "container: running"
+        echo "name: ${cname}"
+        if curl -sf "http://localhost:${port}/health" >/dev/null 2>&1; then
+            echo "health: healthy"
+        else
+            echo "health: not ready"
+        fi
+    elif docker ps -a --format '{{.Names}}' | grep -qx "${cname}"; then
+        echo "container: stopped"
+        echo "name: ${cname}"
+    else
+        echo "container: not found"
+        echo "name: ${cname}"
+    fi
+}
+
+COMMAND="${1:-}"
+parse_args "$@"
+
+case "${COMMAND}" in
+    deploy) cmd_deploy ;;
+    reset)  cmd_reset ;;
+    seed)   cmd_seed ;;
+    status) cmd_status ;;
+    *)      usage ;;
+esac
