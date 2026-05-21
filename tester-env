@@ -3,7 +3,7 @@ set -euo pipefail
 
 # tester-env: Gotify lifecycle CLI for rl-env orchestration.
 #
-# Commands: deploy | reset | seed | status
+# Commands: deploy | reset | seed | verify | status
 # Required: --run-id <id>
 # Optional: --port <port>
 
@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="tester-env-gotify"
 
 usage() {
-    echo "Usage: $0 {deploy|reset|seed|status} --run-id <id> [--port <port>]" >&2
+    echo "Usage: $0 {deploy|reset|seed|verify|status} --run-id <id> [--port <port>]" >&2
     exit 1
 }
 
@@ -97,7 +97,204 @@ cmd_reset() {
 }
 
 cmd_seed() {
-    echo "[seed] No seed profile recorded for gotify. Nothing to do."
+    local port
+    port="${PORT:-80}"
+
+    GOTIFY_URL="http://localhost:${port}" python3 - <<'PY'
+import base64
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE = os.environ["GOTIFY_URL"].rstrip("/")
+AUTH = base64.b64encode(b"admin:admin").decode("ascii")
+
+APPS = [
+    {
+        "name": "Checkout API",
+        "description": "Customer checkout and payment authorization events for the storefront.",
+        "defaultPriority": 5,
+        "messages": [
+            (8, "Payment provider latency high", "Stripe authorization p95 reached 1850 ms during the EU morning peak."),
+            (5, "Cart recovery job complete", "Recovered 42 abandoned carts from the overnight campaign queue."),
+            (4, "Fraud rules refreshed", "Velocity and billing-country rules were reloaded from config version fraud-2026-05-01."),
+            (2, "Synthetic checkout passed", "Frankfurt probe completed card checkout in 3.2 seconds."),
+        ],
+    },
+    {
+        "name": "Billing Worker",
+        "description": "Subscription invoice generation, retry, and settlement background jobs.",
+        "defaultPriority": 4,
+        "messages": [
+            (7, "Invoice retry queue draining", "Retry worker processed 118 pending invoices; 6 remain for manual review."),
+            (5, "ACH settlement imported", "Bank file ach-settlement-2026-05-20.csv matched 312 customer payments."),
+            (3, "Tax table sync complete", "Avalara sandbox export loaded 84 jurisdiction updates for May billing."),
+        ],
+    },
+    {
+        "name": "Security Alerts",
+        "description": "Identity, access, audit, and vulnerability notifications from production systems.",
+        "defaultPriority": 9,
+        "messages": [
+            (10, "Privileged login from new location", "Admin user ops-lead signed in from a new London office network."),
+            (8, "Container image scan failed", "warehouse-api:615fb5a contains one critical OpenSSL finding awaiting triage."),
+            (6, "API token rotated", "Release automation token was rotated and expires on 2026-08-01."),
+            (4, "Audit export finished", "Quarterly SOC2 evidence bundle security-audit-q2.zip is ready for review."),
+        ],
+    },
+    {
+        "name": "Release Monitor",
+        "description": "Deployment pipeline milestones and post-release verification checks.",
+        "defaultPriority": 3,
+        "messages": [
+            (6, "Canary deploy paused", "Version 2026.05.21-canary is paused at 25% after elevated 500 responses."),
+            (4, "Database migration verified", "Migration 2026052101_add_order_events completed on staging and production."),
+            (2, "Changelog published", "Release notes for Mobile App 6.4.0 were published to the customer portal."),
+        ],
+    },
+    {
+        "name": "Warehouse Scanner",
+        "description": "Handheld scanner fleet status and fulfillment floor operational alerts.",
+        "defaultPriority": 4,
+        "messages": [
+            (7, "Dock 4 scanner offline", "Scanner WH-D4-017 has missed heartbeats for 12 minutes near outbound dock 4."),
+            (5, "Pick wave completed", "Morning pick wave MW-0521 closed with 1,284 items and 99.3% scan accuracy."),
+            (3, "Battery swap reminder", "Nine Zebra TC53 devices are below 15% battery before the afternoon shift."),
+            (2, "Firmware rollout scheduled", "Scanner firmware 11.7.2 will roll out to aisle B devices tonight at 02:00 UTC."),
+        ],
+    },
+]
+
+CLIENTS = [
+    "Operations Wallboard",
+    "iPhone - Ops Lead",
+    "Warehouse Tablet Dock 4",
+    "Release Room Display",
+]
+
+def request(method, path, body=None, *, app_token=None):
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if app_token:
+        headers["X-Gotify-Key"] = app_token
+    else:
+        headers["Authorization"] = f"Basic {AUTH}"
+    req = urllib.request.Request(f"{BASE}{path}", data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            raw = res.read().decode("utf-8")
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        raise RuntimeError(f"{method} {path} failed: HTTP {exc.code} {detail}") from exc
+
+for _ in range(45):
+    try:
+        request("GET", "/health")
+        break
+    except Exception:
+        time.sleep(2)
+else:
+    raise SystemExit("[seed] ERROR: Gotify health endpoint did not become ready")
+
+existing_apps = request("GET", "/application")
+existing_names = {app["name"] for app in existing_apps}
+seed_app_names = {app["name"] for app in APPS}
+if seed_app_names.issubset(existing_names):
+    print("[seed] Seed applications already exist; leaving existing seeded data unchanged.")
+else:
+    overlap = seed_app_names.intersection(existing_names)
+    if overlap:
+        raise SystemExit(f"[seed] ERROR: partial seed exists for {sorted(overlap)}; reset before reseeding")
+    for app in APPS:
+        created = request("POST", "/application", {
+            "name": app["name"],
+            "description": app["description"],
+            "defaultPriority": app["defaultPriority"],
+        })
+        for priority, title, message in app["messages"]:
+            request("POST", "/message", {
+                "title": title,
+                "message": message,
+                "priority": priority,
+                "extras": {"tester-env::seed": {"application": app["name"]}},
+            }, app_token=created["token"])
+        print(f"[seed] Created application {app['name']} with {len(app['messages'])} messages.")
+
+existing_clients = request("GET", "/client")
+existing_client_names = {client["name"] for client in existing_clients}
+for name in CLIENTS:
+    if name not in existing_client_names:
+        request("POST", "/client", {"name": name})
+        print(f"[seed] Created client {name}.")
+
+print("[seed] Gotify seed complete: 5 applications, 18 messages, 4 named clients.")
+PY
+}
+
+cmd_verify() {
+    local port
+    port="${PORT:-80}"
+
+    GOTIFY_URL="http://localhost:${port}" python3 - <<'PY'
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE = os.environ["GOTIFY_URL"].rstrip("/")
+AUTH = base64.b64encode(b"admin:admin").decode("ascii")
+EXPECTED_APPS = ["Checkout API", "Billing Worker", "Security Alerts", "Release Monitor", "Warehouse Scanner"]
+EXPECTED_CLIENTS = ["Operations Wallboard", "iPhone - Ops Lead", "Warehouse Tablet Dock 4", "Release Room Display"]
+EXPECTED_TITLES = [
+    "Payment provider latency high",
+    "Invoice retry queue draining",
+    "Privileged login from new location",
+    "Canary deploy paused",
+    "Dock 4 scanner offline",
+]
+
+def get(path):
+    req = urllib.request.Request(f"{BASE}{path}", headers={"Authorization": f"Basic {AUTH}", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as res:
+        return json.loads(res.read().decode("utf-8"))
+
+apps = get("/application")
+clients = get("/client")
+messages = get("/message?limit=50")["messages"]
+
+app_names = {app["name"] for app in apps}
+client_names = {client["name"] for client in clients}
+message_titles = {msg["title"] for msg in messages}
+missing_apps = [name for name in EXPECTED_APPS if name not in app_names]
+missing_clients = [name for name in EXPECTED_CLIENTS if name not in client_names]
+missing_titles = [title for title in EXPECTED_TITLES if title not in message_titles]
+if missing_apps or missing_clients or missing_titles or len(messages) != 18:
+    print("[verify] ERROR: seed verification failed")
+    print(f"[verify] missing apps: {missing_apps}")
+    print(f"[verify] missing clients: {missing_clients}")
+    print(f"[verify] missing message titles: {missing_titles}")
+    print(f"[verify] message count: {len(messages)}")
+    sys.exit(1)
+
+per_app = {}
+for app in apps:
+    if app["name"] in EXPECTED_APPS:
+        path = f"/application/{app['id']}/message?limit=50"
+        per_app[app["name"]] = len(get(path)["messages"])
+
+print(f"[verify] applications: {', '.join(EXPECTED_APPS)}")
+print(f"[verify] clients: {', '.join(EXPECTED_CLIENTS)}")
+print(f"[verify] messages: {len(messages)} total; per app {per_app}")
+PY
 }
 
 cmd_status() {
@@ -129,6 +326,7 @@ case "${COMMAND}" in
     deploy) cmd_deploy ;;
     reset)  cmd_reset ;;
     seed)   cmd_seed ;;
+    verify) cmd_verify ;;
     status) cmd_status ;;
     *)      usage ;;
 esac

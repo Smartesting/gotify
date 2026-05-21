@@ -58,6 +58,28 @@ docker run -d --name tester-env-gotify \
   tester-env-gotify:latest
 ```
 
+With the RL lifecycle CLI:
+
+```bash
+apps/gotify/tester-env reset --run-id gotify-seed --port 8087
+apps/gotify/tester-env deploy --run-id gotify-seed --port 8087
+apps/gotify/tester-env seed --run-id gotify-seed --port 8087
+apps/gotify/tester-env verify --run-id gotify-seed --port 8087
+apps/gotify/tester-env reset --run-id gotify-seed --port 8087
+```
+
+## Deterministic Seed Data
+
+- Seed command: `apps/gotify/tester-env seed --run-id <id> --port <port>`.
+- Verify command: `apps/gotify/tester-env verify --run-id <id> --port <port>`.
+- Credentials: `admin / admin`.
+- Theme: commerce operations notification hub.
+- Seeded applications: `Checkout API`, `Billing Worker`, `Security Alerts`, `Release Monitor`, `Warehouse Scanner`.
+- Seeded clients: `Operations Wallboard`, `iPhone - Ops Lead`, `Warehouse Tablet Dock 4`, `Release Room Display`.
+- Seeded messages: 18 total across the five applications, including `Payment provider latency high`, `Invoice retry queue draining`, `Privileged login from new location`, `Canary deploy paused`, and `Dock 4 scanner offline`.
+- Message titles, bodies, priorities, application names, and client names are fixed. Gotify assigns message timestamps at API creation time.
+- Browser-checker targets: after login, verify the message list is populated; the Apps view contains the five named applications; the Clients view contains the four named clients; filtering/opening app-specific messages shows known titles such as `Dock 4 scanner offline` under `Warehouse Scanner`.
+
 ## Browser Smoke Test
 
 1. Open `http://localhost:8087` — login page loads without fatal errors.
