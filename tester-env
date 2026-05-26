@@ -9,6 +9,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="tester-env-gotify"
+# IMAGE_TAG set by scripts/rl-env to a content-addressed tag so identical
+# (baseline, patch-set) combos share one image. Manual invocations get :dev.
+DEFAULT_IMAGE_TAG="${IMAGE_NAME}:dev"
 
 usage() {
     echo "Usage: $0 {deploy|reset|seed|verify|status} --run-id <id> [--port <port>]" >&2
@@ -33,7 +36,7 @@ parse_args() {
 
 container_name() { echo "${IMAGE_NAME}-${RUN_ID}"; }
 volume_name()   { echo "${IMAGE_NAME}-data-${RUN_ID}"; }
-image_tag()     { echo "${IMAGE_NAME}:${RUN_ID}"; }
+image_tag()     { echo "${IMAGE_TAG:-${DEFAULT_IMAGE_TAG}}"; }
 
 cmd_deploy() {
     local cname vname itag port
@@ -75,10 +78,9 @@ cmd_deploy() {
 }
 
 cmd_reset() {
-    local cname vname itag
+    local cname vname
     cname=$(container_name)
     vname=$(volume_name)
-    itag=$(image_tag)
 
     echo "[reset] Stopping container ${cname}..."
     docker stop "${cname}" 2>/dev/null || true
@@ -92,8 +94,9 @@ cmd_reset() {
         docker volume rm "${vname}" 2>/dev/null || true
     fi
 
-    echo "[reset] Removing image ${itag}..."
-    docker rmi "${itag}" 2>/dev/null || true
+    # Image tags are content-addressed and shared across runs; leave them
+    # in place so other concurrent runs can reuse the build. Use
+    # `scripts/rl-env gc --prune-images` to garbage-collect unused tags.
 }
 
 cmd_seed() {
