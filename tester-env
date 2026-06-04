@@ -9,6 +9,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="tester-env-gotify"
+TESTER_ENV_PROJECT="${TESTER_ENV_PROJECT:-tester-env}"
+TESTER_ENV_APP="${TESTER_ENV_APP:-gotify}"
+TESTER_ENV_SCENARIO="${TESTER_ENV_SCENARIO:-manual}"
 # IMAGE_TAG set by scripts/rl-env to a content-addressed tag so identical
 # (baseline, patch-set) combos share one image. Manual invocations get :dev.
 DEFAULT_IMAGE_TAG="${IMAGE_NAME}:dev"
@@ -47,6 +50,9 @@ cmd_deploy() {
 
     echo "[deploy] Building Docker image ${itag} from ${SCRIPT_DIR}..."
     docker build \
+        --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+        --label "tester-env.app=${TESTER_ENV_APP}" \
+        --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
         --build-arg GO_VERSION=1.26.0 \
         --build-arg BUILD_JS=1 \
         --build-arg "LD_FLAGS=-w -s -X main.Version=local -X main.BuildDate=$(date '+%F-%T') -X main.Commit=$(git -C "${SCRIPT_DIR}" rev-parse HEAD) -X main.Mode=prod" \
@@ -55,11 +61,20 @@ cmd_deploy() {
         -t "${itag}" \
         "${SCRIPT_DIR}"
 
-    docker volume create "${vname}" 2>/dev/null || true
+    docker volume create \
+        --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+        --label "tester-env.app=${TESTER_ENV_APP}" \
+        --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+        --label "tester-env.run_id=${TESTER_ENV_RUN_ID:-${RUN_ID}}" \
+        "${vname}" 2>/dev/null || true
 
     echo "[deploy] Starting container ${cname} on port ${port}..."
     docker run -d \
         --name "${cname}" \
+        --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+        --label "tester-env.app=${TESTER_ENV_APP}" \
+        --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+        --label "tester-env.run_id=${TESTER_ENV_RUN_ID:-${RUN_ID}}" \
         -p "${port}:80" \
         -e GOTIFY_DEFAULTUSER_PASS=admin \
         -v "${vname}:/app/data" \
