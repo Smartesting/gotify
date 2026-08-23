@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "app": "gotify",
+  "profile": "commerce-ops-notification-hub",
+  "seed_command": "./tester-env seed",
+  "verify_command": "./tester-env verify",
+  "reset_command": "./tester-env reset",
+  "credentials": "admin/admin",
+  "requirements": {
+    "admin-user-credentials": {
+      "status": "present",
+      "evidence": "cmd_deploy starts Gotify with GOTIFY_DEFAULTUSER_PASS=admin creating deterministic admin/admin credentials; cmd_seed and cmd_verify both authenticate with Basic auth admin:admin."
+    },
+    "seeded-apps-checkout-api-and-warehouse-scanner": {
+      "status": "present",
+      "evidence": "cmd_seed APPS list creates applications named Checkout API and Warehouse Scanner via POST /application along with Billing Worker, Security Alerts, and Release Monitor; cmd_verify EXPECTED_APPS includes Checkout API and Warehouse Scanner."
+    }
+  }
+}
